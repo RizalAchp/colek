@@ -1,0 +1,23 @@
+[package]
+name = "colek"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.72"
+async-trait = "0.1.72"
+async_zip = { version = "0.0.15", features = ["full"] }
+clap = { version = "4.3.21", features = ["derive"] }
+env_logger = "0.10.0"
+futures = "0.3.28"
+log = "0.4.19"
+sysinfo = "0.29.7"
+tokio = { version = "1.29.1", features = ["full"] }
+uuid = { version = "1.4.1", features = ["v4"] }
+zip = "0.6.6"
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1.12"
+winapi = {version = "*", features =["winnt"]}
