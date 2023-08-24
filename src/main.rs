@@ -1,5 +1,4 @@
 mod app;
-mod dir;
 mod filters;
 mod system;
 
@@ -9,7 +8,6 @@ use app::App;
 use clap::Parser;
 
 const APP_NAME: &str = env!("CARGO_PKG_NAME");
-const SIZE_BUF_WRITE: usize = (8 << 10) * 1000;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, clap::Subcommand)]
 pub enum Filter {
@@ -74,8 +72,7 @@ enum Commands {
     },
 }
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 8)]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     let args = CliArgs::parse();
     env_logger::Builder::from_env(env_logger::Env::default())
         .filter_level(args.log_level)
@@ -83,22 +80,19 @@ async fn main() -> anyhow::Result<()> {
 
     match args.command {
         Commands::Stdout { filter } => {
-            let mut sys = system::SystemDiskInfo::new(filter);
-            let mut application = app::AppDefault::new(&mut sys).await?;
-            application.run(&mut sys).await?;
-            application.finish().await
+            let mut sys = system::SystemDiskInfo::new();
+            let mut application = app::AppDefault::new()?;
+            application.run(&mut sys, filter)
         }
         Commands::Copy { target, filter } => {
-            let mut sys = system::SystemDiskInfo::new(filter).with_output(target);
-            let mut application = app::AppCopy::new(&mut sys).await?;
-            application.run(&mut sys).await?;
-            application.finish().await
+            let mut sys = system::SystemDiskInfo::new();
+            let mut application = app::AppCopy::new(sys.dest(target))?;
+            application.run(&mut sys, filter)
         }
         Commands::Zip { output, filter } => {
-            let mut sys = system::SystemDiskInfo::new(filter).with_output(output);
-            let mut application = app::AppZip::new(&mut sys).await?;
-            application.run(&mut sys).await?;
-            application.finish().await
+            let mut sys = system::SystemDiskInfo::new();
+            let mut application = app::AppZip::new(sys.dest(output))?;
+            application.run(&mut sys, filter)
         }
     }
 }

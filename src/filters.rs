@@ -1,4 +1,4 @@
-use tokio::fs::DirEntry;
+use walkdir::DirEntry;
 
 #[macro_export]
 macro_rules! files_filter {
@@ -15,7 +15,7 @@ macro_rules! files_filter {
     ($name:ident, $([$($ext:tt)*])?) => {
         #[inline]
         #[allow(unused)]
-        pub fn $name(dir: &tokio::fs::DirEntry) -> bool {
+        pub fn $name(dir: &walkdir::DirEntry) -> bool {
             let Some(Some(ext)) = dir.path().extension().map(|ext| ext.to_str().map(|s| s.to_ascii_lowercase())) else {
                 return false;
             };

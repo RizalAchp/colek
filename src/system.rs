@@ -1,9 +1,7 @@
-use futures::channel::mpsc;
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::mpsc};
 use sysinfo::{DiskExt, SystemExt};
-use tokio::fs::DirEntry;
 
-use crate::{dir, filters::FilterFn, Filter};
+use crate::filters::FilterFn;
 
 #[cfg(windows)]
 const ROOT_DIR: &str = "C:";
@@ -61,37 +59,16 @@ impl DiskPartition {
     }
 }
 
-#[derive(Clone)]
-struct WithFilterCall<F> {
-    fp: F,
-}
-
-impl<F> WithFilterCall<F>
-where
-    F: Fn(&DirEntry) -> bool + Send + Sync + 'static,
-{
-    pub fn new(fp: F) -> Self {
-        WithFilterCall { fp }
-    }
-
-    pub fn call(&self, dir: &DirEntry) -> bool {
-        (self.fp)(dir)
-    }
-}
-
 pub struct SystemDiskInfo {
     pub name: Option<String>,
     pub kernel_version: Option<String>,
     pub os_version: Option<String>,
     pub host_name: Option<String>,
     pub drives: Vec<DiskPartition>,
-
-    output: Option<PathBuf>,
-    filter: Arc<WithFilterCall<Box<FilterFn>>>,
 }
 
 impl SystemDiskInfo {
-    pub fn new(filter: crate::Filter) -> Self {
+    pub fn new() -> Self {
         let sys = sysinfo::System::new_all();
         #[cfg(debug_assertions)]
         {
@@ -121,45 +98,10 @@ impl SystemDiskInfo {
             os_version,
             host_name,
             drives,
-            output: None,
-            filter: Arc::new(WithFilterCall::new(match filter {
-                Filter::Image => Box::new(crate::filters::is_images) as Box<FilterFn>,
-                Filter::Video => Box::new(crate::filters::is_videos) as Box<FilterFn>,
-                Filter::Music => Box::new(crate::filters::is_images_and_videos) as Box<FilterFn>,
-                Filter::Other {
-                    ignorecase,
-                    name,
-                    extension,
-                } => Box::new(move |a: &'_ tokio::fs::DirEntry| -> bool {
-                    let path = a.path();
-                    let has_name = if let Some(ref name) = &name {
-                        let name = is_ignorecase(ignorecase, name);
-                        path.file_name()
-                            .map(|x| is_ignorecase(ignorecase, x.to_string_lossy()))
-                            .is_some_and(|x| x.contains(&name))
-                    } else {
-                        true
-                    };
-                    let has_extension = if let Some(ref ext) = extension {
-                        path.extension()
-                            .map(|x| is_ignorecase(ignorecase, x.to_string_lossy()))
-                            .is_some_and(|x| x == is_ignorecase(ignorecase, ext))
-                    } else {
-                        false
-                    };
-
-                    has_extension && has_name
-                }) as Box<FilterFn>,
-            })),
         }
     }
 
-    pub fn with_output(mut self, out: Option<PathBuf>) -> Self {
-        self.output = out;
-        self
-    }
-
-    pub fn dest(&mut self) -> PathBuf {
+    pub fn dest(&mut self, out: Option<PathBuf>) -> PathBuf {
         let dest = self
             .removable_drive()
             .map(|x| x.path.clone())
@@ -168,7 +110,7 @@ impl SystemDiskInfo {
                 PathBuf::from("./")
             });
 
-        let out = if let Some(ref out) = self.output {
+        let out = if let Some(ref out) = out {
             out.clone()
         } else {
             PathBuf::from(format!("{}_{}.zip", crate::APP_NAME, self))
@@ -217,30 +159,33 @@ impl SystemDiskInfo {
             .find(|item| matches!(item.tp, DriveType::Removable))
             .cloned()
     }
-
-    #[allow(unused)]
-    pub async fn file_scan(
-        &mut self,
-        tx: mpsc::UnboundedSender<Option<DirEntry>>,
-    ) -> anyhow::Result<()> {
-        use futures::StreamExt;
-        let Some(drives) = self.generic_drive() else { return Err(anyhow::anyhow!("Failed to get Generics Drive")); };
-
-        for drive in drives {
-            log::info!("Process search file in drive: {}", drive.name);
-            let mut visit_stream = dir::WalkDir::new(&drive.path);
-            while let Some(entry) = visit_stream.next().await {
-                match entry {
-                    Ok(dir) if self.filter.call(&dir) => _ = tx.unbounded_send(Some(dir)),
-                    Ok(_) => continue,
-                    Err(err) => log::error!("{err}"),
-                }
-            }
-        }
-        tx.unbounded_send(None);
-        Ok(())
-    }
 }
+
+pub fn file_scan(
+    drives: Vec<DiskPartition>,
+    filter: Box<FilterFn>,
+    tx: mpsc::Sender<Option<walkdir::DirEntry>>,
+) -> anyhow::Result<()> {
+    for drive in drives {
+        log::info!("Process search file in drive: {}", drive.name);
+        for file in walkdir::WalkDir::new(&drive.path)
+            .into_iter()
+            .filter_map(|res| match res {
+                Ok(ok) if filter(&ok) => Some(ok),
+                Err(err) => {
+                    log::error!("Error on scanning dir: {err}");
+                    None
+                }
+                _ => None,
+            })
+        {
+            tx.send(Some(file)).ok();
+        }
+    }
+    let _ = tx.send(None).ok();
+    Ok(())
+}
+
 impl std::fmt::Display for SystemDiskInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(ref name) = self.name {
@@ -250,14 +195,5 @@ impl std::fmt::Display for SystemDiskInfo {
             write!(f, "{}", host_name.replace(' ', "-"))?;
         }
         Ok(())
-    }
-}
-
-#[inline]
-fn is_ignorecase(is: bool, inp: impl AsRef<str>) -> String {
-    if is {
-        inp.as_ref().to_ascii_lowercase()
-    } else {
-        inp.as_ref().to_owned()
     }
 }

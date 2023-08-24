@@ -1,49 +1,55 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::mpsc};
 
-use futures::channel::mpsc;
-use tokio::fs::DirEntry;
+use walkdir::DirEntry;
 
 pub struct AppCopy {
-    tx: mpsc::UnboundedSender<Option<DirEntry>>,
-    rx: mpsc::UnboundedReceiver<Option<DirEntry>>,
+    tx: mpsc::Sender<Option<DirEntry>>,
+    rx: mpsc::Receiver<Option<DirEntry>>,
     dest: PathBuf,
 }
+impl AppCopy {
+    pub fn new(dest: PathBuf) -> anyhow::Result<Self> {
+        let (tx, rx) = mpsc::channel();
+        Ok(Self { tx, rx, dest })
+    }
+}
 
-#[async_trait::async_trait]
 impl super::App for AppCopy {
     #[inline]
-    fn tx(&self) -> mpsc::UnboundedSender<Option<DirEntry>> {
+    fn name() -> &'static str {
+        "Copy"
+    }
+
+    #[inline]
+    fn tx(&self) -> mpsc::Sender<Option<DirEntry>> {
         self.tx.clone()
     }
     #[inline]
-    fn rx(&mut self) -> &mut mpsc::UnboundedReceiver<Option<DirEntry>> {
-        &mut self.rx
+    fn rx(&self) -> &mpsc::Receiver<Option<DirEntry>> {
+        &self.rx
     }
 
-    async fn on_file_scan(&mut self, file: tokio::fs::DirEntry) {
-        use tokio::fs;
+    fn on_file_scan(&mut self, file: DirEntry) {
         let path = file.path();
-        let dest = self.dest.join(
-            path.parent()
-                .map(std::path::Path::to_path_buf)
-                .unwrap_or_else(|| {
-                    log::error!("Failed to get Parrent dir for {}", path.display());
-                    PathBuf::new()
-                }),
-        );
-        match fs::copy(&path, &dest).await {
-            Ok(_) => (),
+        let Some(parent) = path.parent().map(std::path::Path::to_path_buf) else {
+            return;
+        };
+        let dest = self.dest.join(parent);
+        match std::fs::copy(path, &dest) {
+            Ok(k) => log::info!(
+                "Success copying file from {path} into {dest} with size: {k} bytes",
+                path = path.display(),
+                dest = dest.display()
+            ),
             Err(err) => log::error!(
-                "Failed to copy file `{}` into `{}`, {err}",
-                path.display(),
-                dest.display()
+                "Failed to copy file `{path}` into `{dest}` - {err}",
+                path = path.display(),
+                dest = dest.display()
             ),
         }
     }
-    async fn new(sys: &mut crate::system::SystemDiskInfo) -> anyhow::Result<Self> {
-        let dest = sys.dest();
-        let (tx, rx) = mpsc::unbounded();
 
-        Ok(Self { tx, rx, dest })
+    fn finish(&mut self) -> anyhow::Result<()> {
+        Ok(())
     }
 }
