@@ -1,83 +1,95 @@
 mod app_zip;
 mod copy;
 mod default;
+mod hasher;
 
-use std::sync::mpsc::{Receiver, Sender};
+use std::{
+    path::PathBuf,
+    sync::mpsc::{channel, Receiver, Sender},
+};
 
 pub use app_zip::AppZip;
 pub use copy::AppCopy;
 pub use default::AppDefault;
+pub use hasher::{AppHasher, HasherEventDuplicate};
+use rayon::prelude::{IntoParallelIterator, ParallelIterator};
+use walkdir::DirEntry;
 
-use crate::filters::FilterFn;
+use crate::{
+    filters::{is_images_impl, is_music_impl, is_videos_impl, Filter},
+    system::DiskPartition,
+};
+macro_rules! filter_and {
+    ($f:ident & $filter:ident => $fns:expr) => {
+        if ($f & (Filter::$filter as u32)) != 0 {
+            $fns
+        } else {
+            false
+        }
+    };
+}
 
-pub trait App: Sized {
+fn scans_directory(drives: Vec<DiskPartition>, tx: Sender<DirEntry>, filter: u32) {
+    let filter = |d: &DirEntry| -> bool {
+        match d
+            .path()
+            .extension()
+            .map(|ext| ext.to_str().map(|s| s.to_ascii_lowercase()))
+        {
+            Some(Some(ext)) => {
+                let img = filter_and!(filter & Image => is_images_impl(&ext));
+                let video = filter_and!(filter & Video => is_videos_impl(&ext));
+                let music = filter_and!(filter & Music => is_music_impl(&ext));
+                img || video || music
+            }
+            _ => false,
+        }
+    };
+    drives.into_par_iter().for_each(move |drive| {
+        log::info!("Process search file in drive: {}", drive.name);
+        walkdir::WalkDir::new(&drive.path)
+            .into_iter()
+            .for_each(|x| match x {
+                Ok(k) if filter(&k) => {
+                    let _ = tx.send(k).ok();
+                }
+                Err(err) => {
+                    log::error!("Failed when walkdir - {err}");
+                }
+                _ => (),
+            })
+    });
+}
+
+pub trait App: Sized + Clone + Send {
+    type Item: Send;
+
     fn name() -> &'static str;
-    fn tx(&self) -> Sender<Option<walkdir::DirEntry>>;
-    fn rx(&self) -> &Receiver<Option<walkdir::DirEntry>>;
-    fn on_file_scan(&mut self, data: walkdir::DirEntry);
-    fn finish(&mut self) -> anyhow::Result<()>;
+    fn file_scan(&mut self, tx: Sender<Self::Item>, rx: Receiver<DirEntry>);
+    fn on_blocking(&mut self, _rx: Receiver<Self::Item>) {}
+    fn on_finish(&mut self) -> crate::Result<()>;
 
-    fn run(
-        &mut self,
-        sys: &mut crate::system::SystemDiskInfo,
-        filter: crate::Filter,
-    ) -> anyhow::Result<()> {
+    fn run(&mut self, sys: &mut crate::system::SystemDiskInfo, filter: u32) -> crate::Result<()> {
         log::info!("Running an App: {}", Self::name());
-        let tx = self.tx();
         let Some(drives) = sys.generic_drive() else {
-            anyhow::bail!("No Generic Drive detected in this computer!");
+            return Err(crate::ColekError::NoGenericDrive);
         };
+        let (tx_walkdir, rx_walkdir) = channel();
 
-        let handle = std::thread::spawn(|| {
-            let filter = match filter {
-                crate::Filter::Image => Box::new(crate::filters::is_images) as Box<FilterFn>,
-                crate::Filter::Video => Box::new(crate::filters::is_videos) as Box<FilterFn>,
-                crate::Filter::Music => Box::new(crate::filters::is_music) as Box<FilterFn>,
-                crate::Filter::Other {
-                    ignorecase,
-                    name,
-                    extension,
-                } => Box::new(move |a: &'_ walkdir::DirEntry| -> bool {
-                    let path = a.path();
-                    let has_name = if let Some(ref name) = name {
-                        let name = is_ignorecase(ignorecase, name);
-                        path.file_name()
-                            .map(|x| is_ignorecase(ignorecase, x.to_string_lossy()))
-                            .is_some_and(|x| x.contains(&name))
-                    } else {
-                        true
-                    };
-                    let has_extension = if let Some(ref ext) = extension {
-                        path.extension()
-                            .map(|x| is_ignorecase(ignorecase, x.to_string_lossy()))
-                            .is_some_and(|x| x == is_ignorecase(ignorecase, ext))
-                    } else {
-                        false
-                    };
-
-                    has_extension && has_name
-                }) as Box<FilterFn>,
-            };
-            crate::system::file_scan(drives, filter, tx)
+        rayon::spawn(move || {
+            scans_directory(drives, tx_walkdir, filter);
         });
 
-        while let Ok(Some(data)) = self.rx().recv() {
-            self.on_file_scan(data);
-        }
+        let (tx_scanned, rx_scanned) = channel();
 
-        handle
-            .join()
-            .map_err(|err| anyhow::anyhow!("Failed to join thread: {err:?}"))??;
+        self.file_scan(tx_scanned, rx_walkdir);
+        self.on_blocking(rx_scanned);
 
-        self.finish()
+        self.on_finish()
     }
 }
 
-#[inline]
-fn is_ignorecase(is: bool, inp: impl AsRef<str>) -> String {
-    if is {
-        inp.as_ref().to_lowercase()
-    } else {
-        inp.as_ref().to_owned()
-    }
+pub struct CopyItem {
+    pub dest: PathBuf,
+    pub source: PathBuf,
 }

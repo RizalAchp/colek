@@ -1,42 +1,28 @@
 mod app;
+/// TODO(browser_stealer): implement browser information stealer
+// mod browser;
 mod filters;
+mod logger;
 mod system;
+mod error;
 
+use error::{ColekError, Result};
 use std::path::PathBuf;
 
-use app::App;
 use clap::Parser;
+use filters::Filter;
 
 const APP_NAME: &str = env!("CARGO_PKG_NAME");
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, clap::Subcommand)]
-pub enum Filter {
-    Image,
-    Video,
-    Music,
-    Other {
-        /// ignorecase
-        #[arg(long, short, default_value_t = true)]
-        ignorecase: bool,
-        /// search with name
-        #[arg(long, short)]
-        name: Option<String>,
-        /// search with extensions
-        #[arg(long, short, required = true)]
-        extension: Option<String>,
-    },
-}
 
 #[derive(Debug, Clone, PartialEq, clap::Parser)]
 #[command(author, version, about, long_about = None)]
 pub struct CliArgs {
     /// Log Level [possible values: TRACE, DEBUG, INFO, WARN, ERROR]
-    #[arg(
-        long, short,
-        default_value_t = if cfg!(debug_assertions) { log::LevelFilter::Debug } else { log::LevelFilter::Warn },
-        value_parser = clap::value_parser!(log::LevelFilter),
-    )]
-    log_level: log::LevelFilter,
+    #[arg(long, short, default_value_t = false)]
+    verbose: bool,
+
+    #[clap(long, short, value_delimiter=',', action=clap::ArgAction::Append, default_value="image")]
+    filter: Vec<Filter>,
 
     #[command(subcommand)]
     command: Commands,
@@ -45,19 +31,13 @@ pub struct CliArgs {
 #[derive(Debug, Clone, PartialEq, clap::Subcommand)]
 enum Commands {
     /// Output the scaned file to Stdout ( the path name )
-    Stdout {
-        #[command(subcommand)]
-        filter: Filter,
-    },
+    Stdout,
 
     /// Just Copy in the target Directories
     Copy {
         /// target directories to copy the files scanned
-        #[arg(long, short)]
+        #[arg(long, short, required = false)]
         target: Option<PathBuf>,
-
-        #[command(subcommand)]
-        filter: Filter,
     },
 
     /// Output to Zip Files
@@ -65,34 +45,48 @@ enum Commands {
         /// output files
         #[arg(long, short, required = false)]
         output: Option<PathBuf>,
+    },
 
-        /// filter for walkdir [possible values: image, music, video, <other: extensions>]
-        #[command(subcommand)]
-        filter: Filter,
+    /// Hash the file scanned using sha256
+    Hash {
+        /// on duplicate event
+        #[arg(short, long, default_value = "print")]
+        duplicate: app::HasherEventDuplicate,
     },
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> Result<()> {
     let args = CliArgs::parse();
-    env_logger::Builder::from_env(env_logger::Env::default())
-        .filter_level(args.log_level)
-        .init();
+    logger::init(args.verbose);
+    log::info!("Starting Program");
 
+    let mut sys = system::SystemDiskInfo::new();
+    let filter = get_filter(args.filter);
     match args.command {
-        Commands::Stdout { filter } => {
-            let mut sys = system::SystemDiskInfo::new();
+        Commands::Stdout => {
             let mut application = app::AppDefault::new()?;
-            application.run(&mut sys, filter)
+            app::App::run(&mut application, &mut sys, filter)
         }
-        Commands::Copy { target, filter } => {
-            let mut sys = system::SystemDiskInfo::new();
+        Commands::Copy { target } => {
             let mut application = app::AppCopy::new(sys.dest(target))?;
-            application.run(&mut sys, filter)
+            app::App::run(&mut application, &mut sys, filter)
         }
-        Commands::Zip { output, filter } => {
-            let mut sys = system::SystemDiskInfo::new();
+        Commands::Zip { output } => {
             let mut application = app::AppZip::new(sys.dest(output))?;
-            application.run(&mut sys, filter)
+            app::App::run(&mut application, &mut sys, filter)
+        }
+        Commands::Hash { duplicate } => {
+            let mut application = app::AppHasher::new(duplicate);
+            app::App::run(&mut application, &mut sys, filter)
         }
     }
+}
+
+#[inline]
+fn get_filter(filters: impl AsRef<[Filter]>) -> u32 {
+    let mut out = 0;
+    for filter in filters.as_ref() {
+        out |= *filter as u32;
+    }
+    out
 }

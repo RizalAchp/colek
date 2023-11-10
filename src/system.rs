@@ -1,17 +1,20 @@
-use std::{path::PathBuf, sync::mpsc};
+use std::path::PathBuf;
 use sysinfo::{DiskExt, SystemExt};
-
-use crate::filters::FilterFn;
 
 #[cfg(windows)]
 const ROOT_DIR: &str = "C:";
 #[cfg(windows)]
 const BOOT_DIR: &str = "C:";
+#[cfg(windows)]
+fn is_generic_partition(part: &str) -> bool {
+    true
+}
 #[cfg(unix)]
 const ROOT_DIR: &str = "/";
+
 #[cfg(unix)]
 fn is_generic_partition(part: &str) -> bool {
-    !matches!(part, "/boot" | "/efi")
+    !(part.contains("efi") || part.contains("boot"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -19,6 +22,7 @@ pub enum DriveType {
     Root,
     Generic,
     Removable,
+    Boot,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -29,18 +33,27 @@ pub struct DiskPartition {
 }
 
 impl DiskPartition {
-    fn from_heim_partition(part: &sysinfo::Disk) -> Option<Self> {
+    fn from_sysinfo(part: &sysinfo::Disk) -> Option<Self> {
         let name = part.name().to_string_lossy().to_string();
+        #[cfg(windows)]
+        let mut path = part.mount_point().to_path_buf();
+        #[cfg(unix)]
         let path = part.mount_point().to_path_buf();
         let p_str = path.to_str();
         let tp = if part.is_removable() {
             DriveType::Removable
         } else if p_str == Some(ROOT_DIR) {
+            #[cfg(windows)]
+            {
+                path = dirs::home_dir().unwrap_or(path);
+                DriveType::Generic
+            }
+            #[cfg(unix)]
             DriveType::Root
         } else if p_str.is_some_and(is_generic_partition) {
             DriveType::Generic
         } else {
-            return None;
+            DriveType::Boot
         };
 
         #[cfg(debug_assertions)]
@@ -59,6 +72,7 @@ impl DiskPartition {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct SystemDiskInfo {
     pub name: Option<String>,
     pub kernel_version: Option<String>,
@@ -89,7 +103,7 @@ impl SystemDiskInfo {
         let drives = sys
             .disks()
             .iter()
-            .filter_map(DiskPartition::from_heim_partition)
+            .filter_map(DiskPartition::from_sysinfo)
             .collect();
 
         Self {
@@ -102,25 +116,16 @@ impl SystemDiskInfo {
     }
 
     pub fn dest(&mut self, out: Option<PathBuf>) -> PathBuf {
-        let dest = self
-            .removable_drive()
-            .map(|x| x.path.clone())
-            .unwrap_or_else(|| {
-                log::error!("No Removeable Drive, Defaulting in current location");
-                PathBuf::from("./")
-            });
-
-        let out = if let Some(ref out) = out {
-            out.clone()
-        } else {
-            PathBuf::from(format!("{}_{}.zip", crate::APP_NAME, self))
-        };
-
-        if !dest.exists() {
-            out
-        } else {
-            dest.join(out)
-        }
+        let dest = self.removable_drive().map(|x| x.path).unwrap_or_else(|| {
+            log::error!("No Removeable Drive, Defaulting in current location");
+            PathBuf::from("./")
+        });
+        let out = out.unwrap_or_else(|| PathBuf::from(format!("{}_{}", crate::APP_NAME, self)));
+        let dest = if !dest.exists() { out } else { dest.join(out) };
+        std::fs::create_dir_all(&dest).unwrap_or_else(|err| {
+            log::error!("Failed to create directory {} - {err}", dest.display())
+        });
+        dest
     }
 
     #[inline]
@@ -159,31 +164,6 @@ impl SystemDiskInfo {
             .find(|item| matches!(item.tp, DriveType::Removable))
             .cloned()
     }
-}
-
-pub fn file_scan(
-    drives: Vec<DiskPartition>,
-    filter: Box<FilterFn>,
-    tx: mpsc::Sender<Option<walkdir::DirEntry>>,
-) -> anyhow::Result<()> {
-    for drive in drives {
-        log::info!("Process search file in drive: {}", drive.name);
-        for file in walkdir::WalkDir::new(&drive.path)
-            .into_iter()
-            .filter_map(|res| match res {
-                Ok(ok) if filter(&ok) => Some(ok),
-                Err(err) => {
-                    log::error!("Error on scanning dir: {err}");
-                    None
-                }
-                _ => None,
-            })
-        {
-            tx.send(Some(file)).ok();
-        }
-    }
-    let _ = tx.send(None).ok();
-    Ok(())
 }
 
 impl std::fmt::Display for SystemDiskInfo {
