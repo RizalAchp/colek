@@ -15,12 +15,3 @@ sysinfo = "0.29"
 walkdir = "2"
 xxhash-rust = { version = "0.8.7", features = ["xxh3"] }
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
-
-## BROWSER STEALER?
-# rusqlite = "0.29.0"
-# secret-service = "2.0.0"
-# pbkdf2 = "0.10"
-# hmac = "0.12.1"
-# sha-1 = "0.10.0"
-# cbc = "0.1.2"
-# aes = "0.8.1"

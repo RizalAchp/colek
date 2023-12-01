@@ -1,28 +1,44 @@
 mod app;
+mod error;
 /// TODO(browser_stealer): implement browser information stealer
 // mod browser;
 mod filters;
 mod logger;
 mod system;
-mod error;
 
+use app::App;
 use error::{ColekError, Result};
-use std::path::PathBuf;
+use logger::LogLevel;
+use std::{path::PathBuf, process::ExitCode};
 
 use clap::Parser;
-use filters::Filter;
+use filters::{Filter, Filters};
 
 const APP_NAME: &str = env!("CARGO_PKG_NAME");
+fn main() -> ExitCode {
+    let args = CliArgs::parse();
+    logger::init(args.verbose);
+    log::info!("{APP_NAME} - Starting Program");
 
+    let mut sys = system::SystemDiskInfo::new();
+    let filter = Filters::from(args.filter);
+    if let Err(err) = args.command.run(&mut sys, filter) {
+        log::error!("{APP_NAME} - Failed on running command: {err}");
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
 #[derive(Debug, Clone, PartialEq, clap::Parser)]
 #[command(author, version, about, long_about = None)]
 pub struct CliArgs {
-    /// Log Level [possible values: TRACE, DEBUG, INFO, WARN, ERROR]
-    #[arg(long, short, default_value_t = false)]
-    verbose: bool,
-
+    /// set filter for runner app
     #[clap(long, short, value_delimiter=',', action=clap::ArgAction::Append, default_value="image")]
     filter: Vec<Filter>,
+
+    /// set max verbosity level for stdout/stderr logger
+    #[arg(long, short, default_value = "warn")]
+    verbose: LogLevel,
 
     #[command(subcommand)]
     command: Commands,
@@ -55,38 +71,28 @@ enum Commands {
     },
 }
 
-fn main() -> Result<()> {
-    let args = CliArgs::parse();
-    logger::init(args.verbose);
-    log::info!("Starting Program");
-
-    let mut sys = system::SystemDiskInfo::new();
-    let filter = get_filter(args.filter);
-    match args.command {
-        Commands::Stdout => {
-            let mut application = app::AppDefault::new()?;
-            app::App::run(&mut application, &mut sys, filter)
-        }
-        Commands::Copy { target } => {
-            let mut application = app::AppCopy::new(sys.dest(target))?;
-            app::App::run(&mut application, &mut sys, filter)
-        }
-        Commands::Zip { output } => {
-            let mut application = app::AppZip::new(sys.dest(output))?;
-            app::App::run(&mut application, &mut sys, filter)
-        }
-        Commands::Hash { duplicate } => {
-            let mut application = app::AppHasher::new(duplicate);
-            app::App::run(&mut application, &mut sys, filter)
+impl Commands {
+    pub fn run(self, sys: &mut system::SystemDiskInfo, filter: Filters) -> Result<()> {
+        let Some(drives) = sys.generic_drive() else {
+            return Err(crate::ColekError::NoGenericDrive);
+        };
+        match self {
+            Commands::Stdout => {
+                let mut application = app::AppDefault::new()?;
+                application.run(drives, filter)
+            }
+            Commands::Copy { target } => {
+                let mut application = app::AppCopy::new(sys.dest(target))?;
+                application.run(drives, filter)
+            }
+            Commands::Zip { output } => {
+                let mut application = app::AppZip::new(sys.dest(output))?;
+                application.run(drives, filter)
+            }
+            Commands::Hash { duplicate } => {
+                let mut application = app::AppHasher::new(duplicate);
+                application.run(drives, filter)
+            }
         }
     }
-}
-
-#[inline]
-fn get_filter(filters: impl AsRef<[Filter]>) -> u32 {
-    let mut out = 0;
-    for filter in filters.as_ref() {
-        out |= *filter as u32;
-    }
-    out
 }

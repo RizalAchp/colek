@@ -16,72 +16,64 @@ use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use walkdir::DirEntry;
 
 use crate::{
-    filters::{is_images_impl, is_music_impl, is_videos_impl, Filter},
+    filters::{is_images_impl, is_music_impl, is_videos_impl, Filter, Filters},
     system::DiskPartition,
 };
-macro_rules! filter_and {
-    ($f:ident & $filter:ident => $fns:expr) => {
-        if ($f & (Filter::$filter as u32)) != 0 {
-            $fns
-        } else {
-            false
+
+#[inline]
+fn filter_check(d: &DirEntry, filter: Filters) -> bool {
+    macro_rules! is_filter {
+        ($f:ident & $filter:ident => $fns:expr) => {
+            $f.contains(Filter::$filter) && $fns
+        };
+    }
+
+    match d
+        .path()
+        .extension()
+        .and_then(|ext| ext.to_str().map(|s| s.to_ascii_lowercase()))
+    {
+        Some(ext) => {
+            is_filter!(filter & Image => is_images_impl(&ext))
+                || is_filter!(filter & Video => is_videos_impl(&ext))
+                || is_filter!(filter & Music => is_music_impl(&ext))
         }
-    };
+        _ => false,
+    }
 }
 
-fn scans_directory(drives: Vec<DiskPartition>, tx: Sender<DirEntry>, filter: u32) {
-    let filter = |d: &DirEntry| -> bool {
-        match d
-            .path()
-            .extension()
-            .map(|ext| ext.to_str().map(|s| s.to_ascii_lowercase()))
-        {
-            Some(Some(ext)) => {
-                let img = filter_and!(filter & Image => is_images_impl(&ext));
-                let video = filter_and!(filter & Video => is_videos_impl(&ext));
-                let music = filter_and!(filter & Music => is_music_impl(&ext));
-                img || video || music
+fn scans_directory(drives: Vec<DiskPartition>, tx: Sender<DirEntry>, filter: Filters) {
+    rayon::spawn(move || {
+        drives.into_par_iter().for_each(move |drive| {
+            log::info!("Process search file in drive: {}", drive.name);
+            for d in walkdir::WalkDir::new(&drive.path)
+                .into_iter()
+                .filter_map(move |d| match d {
+                    Ok(o) if filter_check(&o, filter) => Some(o),
+                    _ => None,
+                })
+            {
+                let _ = tx.send(d).ok();
             }
-            _ => false,
-        }
-    };
-    drives.into_par_iter().for_each(move |drive| {
-        log::info!("Process search file in drive: {}", drive.name);
-        walkdir::WalkDir::new(&drive.path)
-            .into_iter()
-            .for_each(|x| match x {
-                Ok(k) if filter(&k) => {
-                    let _ = tx.send(k).ok();
-                }
-                Err(err) => {
-                    log::error!("Failed when walkdir - {err}");
-                }
-                _ => (),
-            })
-    });
+        });
+    })
 }
 
-pub trait App: Sized + Clone + Send {
-    type Item: Send;
+pub trait App {
+    type Item;
 
     fn name() -> &'static str;
     fn file_scan(&mut self, tx: Sender<Self::Item>, rx: Receiver<DirEntry>);
     fn on_blocking(&mut self, _rx: Receiver<Self::Item>) {}
     fn on_finish(&mut self) -> crate::Result<()>;
 
-    fn run(&mut self, sys: &mut crate::system::SystemDiskInfo, filter: u32) -> crate::Result<()> {
+    fn run(&mut self, drives: Vec<DiskPartition>, filter: Filters) -> crate::Result<()> {
         log::info!("Running an App: {}", Self::name());
-        let Some(drives) = sys.generic_drive() else {
-            return Err(crate::ColekError::NoGenericDrive);
-        };
-        let (tx_walkdir, rx_walkdir) = channel();
 
-        rayon::spawn(move || {
-            scans_directory(drives, tx_walkdir, filter);
-        });
+        let (tx_walkdir, rx_walkdir) = channel();
+        scans_directory(drives, tx_walkdir, filter);
 
         let (tx_scanned, rx_scanned) = channel();
-
         self.file_scan(tx_scanned, rx_walkdir);
         self.on_blocking(rx_scanned);
 

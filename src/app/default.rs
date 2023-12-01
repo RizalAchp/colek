@@ -1,13 +1,18 @@
-use std::sync::{
-    atomic::{AtomicUsize, Ordering},
-    mpsc::{Receiver, Sender},
-    Arc,
+use std::{
+    io::{stdout, BufWriter, Stdout, Write},
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc::{Receiver, Sender},
+        Arc,
+    },
 };
 
 use walkdir::DirEntry;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct AppDefault {
+    stdout: BufWriter<Stdout>,
     count: Arc<AtomicUsize>,
     size: Arc<AtomicUsize>,
 }
@@ -15,6 +20,7 @@ pub struct AppDefault {
 impl AppDefault {
     pub fn new() -> crate::Result<Self> {
         Ok(Self {
+            stdout: BufWriter::with_capacity(50 << 10, stdout()),
             count: Arc::new(AtomicUsize::new(0)),
             size: Arc::new(AtomicUsize::new(0)),
         })
@@ -22,17 +28,28 @@ impl AppDefault {
 }
 
 impl super::App for AppDefault {
-    type Item = ();
-    fn file_scan(&mut self, _tx: Sender<Self::Item>, rx: Receiver<DirEntry>) {
+    type Item = PathBuf;
+    fn file_scan(&mut self, tx: Sender<Self::Item>, rx: Receiver<DirEntry>) {
+        let size = self.size.clone();
+        let count = self.count.clone();
+        rayon::spawn(move || {
+            while let Ok(direntry) = rx.recv() {
+                let s = direntry.metadata().map(|x| x.len()).unwrap_or(0) as usize;
+                size.fetch_add(s, Ordering::Relaxed);
+                count.fetch_add(1, Ordering::Relaxed);
+                tx.send(direntry.path().to_path_buf()).ok();
+            }
+        })
+    }
+
+    fn on_blocking(&mut self, rx: Receiver<Self::Item>) {
         while let Ok(direntry) = rx.recv() {
-            println!("path: {}", direntry.path().display());
-            let s = direntry.metadata().map(|x| x.len()).unwrap_or(0) as usize;
-            self.size.fetch_add(s, Ordering::Relaxed);
-            self.count.fetch_add(1, Ordering::Relaxed);
+            writeln!(self.stdout, "path: '{}'", direntry.display()).ok();
         }
     }
 
     fn on_finish(&mut self) -> crate::Result<()> {
+        self.stdout.flush().ok();
         println!("============= Finish Scanning =============");
         println!(
             "size scanned            : {}",

@@ -26,13 +26,33 @@ impl log::Log for Logger {
     }
 }
 
-pub fn init(verbose: bool) {
+pub fn init(level_filter: LogLevel) {
     log::set_logger(&LOGGER).unwrap_or_else(|err| {
         eprintln!("Failed to set logger - {err}");
     });
-    log::set_max_level(if verbose {
-        LevelFilter::Debug
-    } else {
-        LevelFilter::Warn
-    })
+    log::set_max_level(level_filter.into_level_filter())
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
+#[clap(rename_all = "UPPER")]
+pub enum LogLevel {
+    Off,
+    Error,
+    #[default]
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+impl LogLevel {
+    const fn into_level_filter(self) -> LevelFilter {
+        match self {
+            Self::Off => LevelFilter::Off,
+            Self::Error => LevelFilter::Error,
+            Self::Warn => LevelFilter::Warn,
+            Self::Info => LevelFilter::Info,
+            Self::Debug => LevelFilter::Debug,
+            Self::Trace => LevelFilter::Trace,
+        }
+    }
 }
