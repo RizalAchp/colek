@@ -6,19 +6,23 @@ static LOGGER: Logger = Logger;
 
 struct Logger;
 impl log::Log for Logger {
-    fn enabled(&self, _metadata: &log::Metadata) -> bool {
-        true
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        !["ignore::walk", "globset"]
+            .into_iter()
+            .any(|x| x.contains(metadata.target()))
     }
 
     fn log(&self, record: &log::Record) {
-        let _ = writeln!(
-            stderr(),
-            "{:<5}:{}: {}",
-            record.level(),
-            record.target(),
-            record.args()
-        )
-        .ok();
+        if self.enabled(record.metadata()) {
+            let _ = writeln!(
+                stderr(),
+                "{:<5}:{}: {}",
+                record.level(),
+                record.target(),
+                record.args()
+            )
+            .ok();
+        }
     }
 
     fn flush(&self) {

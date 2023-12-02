@@ -7,7 +7,7 @@ pub enum ColekError {
     Err(String),
     StaticErr(&'static str),
     IoError(std::io::Error),
-    Walkdir(walkdir::Error),
+    Ignore(ignore::Error),
     Zip(zip::result::ZipError),
 }
 
@@ -19,7 +19,7 @@ impl Display for ColekError {
             ColekError::Err(err) => write!(f, "{err}"),
             ColekError::StaticErr(err) => f.write_str(err),
             ColekError::IoError(ioerr) => write!(f, "IO: {ioerr}"),
-            ColekError::Walkdir(err) => write!(f, "walkdir: {err}"),
+            ColekError::Ignore(err) => write!(f, "walkdir: {err}"),
             ColekError::Zip(err) => write!(f, "zip: {err}"),
         }
     }
@@ -43,9 +43,9 @@ impl From<&'static str> for ColekError {
     }
 }
 
-impl From<walkdir::Error> for ColekError {
-    fn from(value: walkdir::Error) -> Self {
-        Self::Walkdir(value)
+impl From<ignore::Error> for ColekError {
+    fn from(value: ignore::Error) -> Self {
+        Self::Ignore(value)
     }
 }
 

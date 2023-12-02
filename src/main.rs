@@ -1,7 +1,5 @@
 mod app;
 mod error;
-/// TODO(browser_stealer): implement browser information stealer
-// mod browser;
 mod filters;
 mod logger;
 mod system;
@@ -21,7 +19,8 @@ fn main() -> ExitCode {
     log::info!("{APP_NAME} - Starting Program");
 
     let mut sys = system::SystemDiskInfo::new();
-    let filter = Filters::from(args.filter);
+    dbg!(&args.filter);
+    let filter = Filters::from(args.filter.unwrap_or_else(|| vec![Filter::Image]));
     if let Err(err) = args.command.run(&mut sys, filter) {
         log::error!("{APP_NAME} - Failed on running command: {err}");
         ExitCode::FAILURE
@@ -33,8 +32,8 @@ fn main() -> ExitCode {
 #[command(author, version, about, long_about = None)]
 pub struct CliArgs {
     /// set filter for runner app
-    #[clap(long, short, value_delimiter=',', action=clap::ArgAction::Append, default_value="image")]
-    filter: Vec<Filter>,
+    #[clap(long, short, value_delimiter=',', action=clap::ArgAction::Append)]
+    filter: Option<Vec<Filter>>,
 
     /// set max verbosity level for stdout/stderr logger
     #[arg(long, short, default_value = "warn")]

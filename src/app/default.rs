@@ -8,7 +8,7 @@ use std::{
     },
 };
 
-use walkdir::DirEntry;
+use ignore::DirEntry;
 
 #[derive(Debug)]
 pub struct AppDefault {
@@ -29,7 +29,8 @@ impl AppDefault {
 
 impl super::App for AppDefault {
     type Item = PathBuf;
-    fn file_scan(&mut self, tx: Sender<Self::Item>, rx: Receiver<DirEntry>) {
+    fn file_scan(&mut self, tx: Sender<Self::Item>, rx: Receiver<DirEntry>) -> crate::Result<()> {
+        log::debug!("{}: on FileScan", Self::name());
         let size = self.size.clone();
         let count = self.count.clone();
         rayon::spawn(move || {
@@ -39,13 +40,16 @@ impl super::App for AppDefault {
                 count.fetch_add(1, Ordering::Relaxed);
                 tx.send(direntry.path().to_path_buf()).ok();
             }
-        })
+        });
+        Ok(())
     }
 
-    fn on_blocking(&mut self, rx: Receiver<Self::Item>) {
+    fn on_blocking(&mut self, rx: Receiver<Self::Item>) -> crate::Result<()> {
+        log::debug!("{}: on Blocking", Self::name());
         while let Ok(direntry) = rx.recv() {
             writeln!(self.stdout, "path: '{}'", direntry.display()).ok();
         }
+        Ok(())
     }
 
     fn on_finish(&mut self) -> crate::Result<()> {

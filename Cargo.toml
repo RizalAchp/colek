@@ -8,10 +8,10 @@ edition = "2021"
 [dependencies]
 clap = { version = "4.3", features = ["derive"] }
 dirs = "5.0.1"
+ignore = "0.4.21"
 log = "0.4"
 paste = "1.0.14"
 rayon = "1.8.0"
 sysinfo = "0.29"
-walkdir = "2"
 xxhash-rust = { version = "0.8.7", features = ["xxh3"] }
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
