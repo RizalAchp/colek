@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use sysinfo::{DiskExt, SystemExt};
 
+use crate::err_log;
+
 #[cfg(windows)]
 const ROOT_DIR: &str = "C:";
 #[cfg(windows)]
@@ -24,23 +26,10 @@ pub enum DriveType {
     Removable,
     Boot,
 }
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct DiskPartition {
-    pub tp: DriveType,
-    pub name: String,
-    pub path: PathBuf,
-}
-
-impl DiskPartition {
-    fn from_sysinfo(part: &sysinfo::Disk) -> Option<Self> {
-        let name = part.name().to_string_lossy().to_string();
-        #[cfg(windows)]
-        let mut path = part.mount_point().to_path_buf();
-        #[cfg(unix)]
-        let path = part.mount_point().to_path_buf();
-        let p_str = path.to_str();
-        let tp = if part.is_removable() {
+impl DriveType {
+    fn from_sysinfo_disk(disk: &sysinfo::Disk) -> Self {
+        let p_str = disk.mount_point().to_str();
+        if disk.is_removable() {
             DriveType::Removable
         } else if p_str == Some(ROOT_DIR) {
             #[cfg(windows)]
@@ -54,21 +43,32 @@ impl DiskPartition {
             DriveType::Generic
         } else {
             DriveType::Boot
-        };
+        }
+    }
+}
 
-        #[cfg(debug_assertions)]
-        {
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiskPartition {
+    pub tp: DriveType,
+    pub name: String,
+    pub path: PathBuf,
+}
+
+impl DiskPartition {
+    fn from_sysinfo(part: &sysinfo::Disk) -> Self {
+        let tp = DriveType::from_sysinfo_disk(part);
+        let name = part.name().to_str().unwrap_or("").to_owned();
+        let path = part.mount_point().to_path_buf();
+        if log::max_level() >= log::LevelFilter::Info {
             let total = part.total_space() as f32 * 1e-9;
             let free = part.available_space() as f32 * 1e-9;
             let used = total - free;
-
-            println!(
-                "{name:<25} {total:<12} {used:<12} {free:<12} {mount}",
+            eprintln!(
+                "{name:<10} {total:<10} {used:<10} {free:<10} '{mount}'",
                 mount = path.display(),
             );
         }
-
-        Some(Self { tp, name, path })
+        Self { tp, name, path }
     }
 }
 
@@ -78,53 +78,71 @@ pub struct SystemDiskInfo {
     pub kernel_version: Option<String>,
     pub os_version: Option<String>,
     pub host_name: Option<String>,
+    pub default_filename: String,
     pub drives: Vec<DiskPartition>,
 }
 
 impl SystemDiskInfo {
     pub fn new() -> Self {
         let sys = sysinfo::System::new_all();
-        #[cfg(debug_assertions)]
-        {
-            println!(
-                "{device:<25} {total:<12} {used:<12} {free:<12} Mount",
+        if log::max_level() >= log::LevelFilter::Info {
+            eprintln!("===================================================");
+            eprintln!(
+                "{device:<10} {total:<10} {used:<10} {free:<10} Mount",
                 device = "Device",
                 total = "Total, GB",
                 used = "Used, GB",
                 free = "Free, GB",
             );
         }
+        let drives = sys
+            .disks()
+            .iter()
+            .map(DiskPartition::from_sysinfo)
+            .collect();
+        eprintln!("===================================================");
 
         let name = sys.name();
         let kernel_version = sys.kernel_version();
         let os_version = sys.os_version();
         let host_name = sys.host_name();
 
-        let drives = sys
-            .disks()
-            .iter()
-            .filter_map(DiskPartition::from_sysinfo)
-            .collect();
+        use crate::APP_NAME;
+        let default_filename = match (&name, &host_name) {
+            (Some(n), _) => format!("{APP_NAME}_{n}"),
+            (None, Some(hn)) => format!("{APP_NAME}_{hn}"),
+            _ => APP_NAME.to_owned(),
+        };
 
         Self {
             name,
             kernel_version,
             os_version,
             host_name,
+            default_filename,
             drives,
         }
     }
 
     pub fn dest(&mut self, out: Option<PathBuf>) -> PathBuf {
-        let dest = self.removable_drive().map(|x| x.path).unwrap_or_else(|| {
-            log::error!("No Removeable Drive, Defaulting in current location");
-            PathBuf::from("./")
-        });
-        let out = out.unwrap_or_else(|| PathBuf::from(format!("{}_{}", crate::APP_NAME, self)));
-        let dest = if !dest.exists() { out } else { dest.join(out) };
-        std::fs::create_dir_all(&dest).unwrap_or_else(|err| {
-            log::error!("Failed to create directory {} - {err}", dest.display())
-        });
+        let dest = match out {
+            Some(out) => out,
+            None => self.removable_drive().map_or_else(
+                || {
+                    log::error!("No Removeable Drive");
+                    PathBuf::from(&self.default_filename)
+                },
+                |x| x.path.join(&self.default_filename),
+            ),
+        };
+
+        if !dest.exists() {
+            err_log!(
+                std::fs::create_dir_all(&dest),
+                "create_dir_all: {}",
+                dest.display()
+            );
+        }
         dest
     }
 

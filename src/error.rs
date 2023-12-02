@@ -72,3 +72,25 @@ impl From<zip::result::ZipError> for ColekError {
         Self::Zip(value)
     }
 }
+
+#[macro_export]
+macro_rules! err_log {
+    ($err:expr, $arg:literal) => {
+        match $err {
+            Ok(ok) => Some(ok),
+            Err(err) => {
+                $crate::error!("{} - (Reason: {err})", $arg);
+                None
+            }
+        }
+    };
+    ($err:expr, $($arg:tt)*) => {
+        match $err {
+            Ok(ok) => Some(ok),
+            Err(err) => {
+                $crate::error!("{} - (Reason: {err})", format!($($arg)*));
+                None
+            }
+        }
+    };
+}

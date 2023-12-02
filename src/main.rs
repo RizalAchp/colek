@@ -4,6 +4,9 @@ mod filters;
 mod logger;
 mod system;
 
+#[allow(unused)]
+use log::{debug, error, info, warn};
+
 use app::App;
 use error::{ColekError, Result};
 use logger::LogLevel;
@@ -19,8 +22,9 @@ fn main() -> ExitCode {
     log::info!("{APP_NAME} - Starting Program");
 
     let mut sys = system::SystemDiskInfo::new();
-    dbg!(&args.filter);
-    let filter = Filters::from(args.filter.unwrap_or_else(|| vec![Filter::Image]));
+    let filter = args.filter.unwrap_or_else(|| vec![Filter::Image]);
+    let filter = Filters::from(filter);
+
     if let Err(err) = args.command.run(&mut sys, filter) {
         log::error!("{APP_NAME} - Failed on running command: {err}");
         ExitCode::FAILURE
@@ -28,6 +32,7 @@ fn main() -> ExitCode {
         ExitCode::SUCCESS
     }
 }
+
 #[derive(Debug, Clone, PartialEq, clap::Parser)]
 #[command(author, version, about, long_about = None)]
 pub struct CliArgs {
